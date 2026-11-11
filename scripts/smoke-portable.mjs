@@ -1,0 +1,32 @@
+import fs from 'node:fs/promises';
+import assert from 'node:assert/strict';
+import {JSDOM} from 'jsdom';
+import ExcelJS from 'exceljs';
+const html=await fs.readFile('dist/REI-Print-Assistant.html','utf8');
+assert(!/<script[^>]+src=/.test(html));assert(!/<link[^>]+href=/.test(html));
+const script=html.match(/<script type="module">([\s\S]*?)<\/script>/)?.[1];assert(script);
+const dom=new JSDOM(html,{url:'file:///REI-Print-Assistant.html'});
+Object.assign(globalThis,{window:dom.window,document:dom.window.document,MutationObserver:dom.window.MutationObserver});
+let download;
+URL.createObjectURL=blob=>{download=blob;return 'blob:local-test';};URL.revokeObjectURL=()=>{};
+dom.window.HTMLAnchorElement.prototype.click=function(){};
+await import(`data:text/javascript;base64,${Buffer.from(script).toString('base64')}`);
+const get=id=>document.getElementById(id);
+const until=async predicate=>{for(let i=0;i<200;i++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,10));}throw new Error('UI did not settle');};
+const readDownload=async()=>{await until(()=>!!download);const book=new ExcelJS.Workbook();await book.xlsx.load(await download.arrayBuffer());download=undefined;return book;};
+get('demo').click();get('date').value='2026-12-25';get('date').dispatchEvent(new dom.window.Event('input'));assert.equal(get('total-locations').textContent,'11');get('download').click();
+const demo=await readDownload();assert.equal(demo.worksheets.length,11);assert.deepEqual(demo.worksheets.map(s=>s.name),Array.from({length:11},(_,i)=>`REI-${i+10}`));
+assert(demo.worksheets.every(sheet=>sheet.getCell('D2').value==='25.12.2026'));
+assert(get('issues').textContent.includes('可用库存 0'));
+await until(()=>!get('download').disabled);
+if(process.env.WMS_SAMPLE){
+ const bytes=await fs.readFile(process.env.WMS_SAMPLE);
+ Object.defineProperty(get('files'),'files',{configurable:true,value:[{name:'sample.xlsx',size:bytes.length,arrayBuffer:async()=>new Uint8Array(bytes).buffer}]});get('files').dispatchEvent(new dom.window.Event('change'));
+ await until(()=>!get('files').disabled);assert.equal(get('total-locations').textContent,'1');assert.equal(get('total-pieces').textContent,'12');get('download').click();const real=await readDownload();
+ const sheet=real.worksheets[0];assert.equal(sheet.name,'REI-22');assert.equal(sheet.pageSetup.fitToWidth,1);assert.equal(sheet.pageSetup.fitToHeight,1);
+ assert.equal(sheet.getCell('A5').value,sheet.getCell('A6').value);assert.equal(sheet.getCell('A11').value,sheet.getCell('A12').value);assert.equal(sheet.getCell('A17').value,null);
+ if(process.env.SAMPLE_OUTPUT)await real.xlsx.writeFile(process.env.SAMPLE_OUTPUT);
+ console.log('Supplied WMS sample: REI-22, 10 source rows → 12 unit rows; downloaded XLSX reopened successfully.');
+}
+console.log('Portable HTML smoke test passed: embedded app, synthetic 11-sheet demo, working local XLSX download.');
+dom.window.close();process.exit(0);
