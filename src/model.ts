@@ -1,8 +1,24 @@
-export interface StockRow {location:string;sku:string;barcode:string;qty:number;hall:string;customer:string;source:string;sourceRow:number}
+export interface StockRow {location:string;sku:string;barcode:string;qty:number;availableQty?:number|null;availabilityIssue?:'missing-column'|'blank'|'invalid';hall:string;customer:string;source:string;sourceRow:number}
 export interface SourceData {name:string;rows:StockRow[];ignored:number;warnings:string[]}
 export interface LocationGroup {location:string;rows:StockRow[];pieces:number;missing:boolean}
 export interface Selection {groups:LocationGroup[];warnings:string[];pieces:number;missing:string[]}
 export const MAX_PIECES=20000;
+export function localDateString():string {
+ const date=new Date();return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+}
+export function validPrintDate(value:string):boolean {
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(value))return false;
+ const date=new Date(`${value}T00:00:00Z`);return !Number.isNaN(date.getTime())&&date.toISOString().slice(0,10)===value;
+}
+export function availabilityWarning(row:StockRow):string|null {
+ const prefix=`${row.location} / ${row.sku}`;
+ if(row.availabilityIssue){
+  const reason=row.availabilityIssue==='missing-column'?'源表未提供可用库存列':row.availabilityIssue==='blank'?'可用库存为空白':'可用库存格式无效';
+  return `${prefix}：${reason}，无法判断可用数量；仍按库位库存 ${row.qty} 件打印。`;
+ }
+ if(typeof row.availableQty==='number'&&row.availableQty<row.qty)return `${prefix}：可用库存 ${row.availableQty} < 库位库存 ${row.qty}，请留意占用或冻结情况；仍打印 ${row.qty} 件。`;
+ return null;
+}
 export function locationNumber(value:string):number|null {
  const match=/^REI-(\d{1,3})$/i.exec(value.trim());
  if(!match)return null;

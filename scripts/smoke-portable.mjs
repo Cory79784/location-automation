@@ -14,8 +14,10 @@ await import(`data:text/javascript;base64,${Buffer.from(script).toString('base64
 const get=id=>document.getElementById(id);
 const until=async predicate=>{for(let i=0;i<200;i++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,10));}throw new Error('UI did not settle');};
 const readDownload=async()=>{await until(()=>!!download);const book=new ExcelJS.Workbook();await book.xlsx.load(await download.arrayBuffer());download=undefined;return book;};
-get('demo').click();assert.equal(get('total-locations').textContent,'11');get('download').click();
+get('demo').click();get('date').value='2026-12-25';get('date').dispatchEvent(new dom.window.Event('input'));assert.equal(get('total-locations').textContent,'11');get('download').click();
 const demo=await readDownload();assert.equal(demo.worksheets.length,11);assert.deepEqual(demo.worksheets.map(s=>s.name),Array.from({length:11},(_,i)=>`REI-${i+10}`));
+assert(demo.worksheets.every(sheet=>sheet.getCell('D2').value==='25.12.2026'));
+assert(get('issues').textContent.includes('可用库存 0'));
 await until(()=>!get('download').disabled);
 if(process.env.WMS_SAMPLE){
  const bytes=await fs.readFile(process.env.WMS_SAMPLE);

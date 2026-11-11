@@ -1,6 +1,6 @@
 import ExcelJS from 'exceljs';
-import {canonicalLocation,expandRows,MAX_PIECES,type Selection,type SourceData,type StockRow} from './model';
-const aliases={sku:['SKU编码','SKU'],barcode:['Barcode','条码'],location:['库位','库位编码','Location'],qty:['库位库存','库存数量','System quantity'],hall:['库区','库厅','Hall'],customer:['客户编码','Customer']};
+import {canonicalLocation,expandRows,MAX_PIECES,validPrintDate,type Selection,type SourceData,type StockRow} from './model';
+const aliases={sku:['SKU编码','SKU'],barcode:['Barcode','条码'],location:['库位','库位编码','Location'],qty:['库位库存','库存数量','System quantity'],available:['可用库存','Available quantity','Available stock'],hall:['库区','库厅','Hall'],customer:['客户编码','Customer']};
 function raw(cell:ExcelJS.Cell):unknown {
  const value=cell.value;
  if(value&&typeof value==='object'&&('formula' in value||'sharedFormula' in value))throw new Error(`单元格 ${cell.address} 含公式，请使用 WMS 原始导出值。`);
@@ -50,7 +50,18 @@ export async function readSource(name:string,bytes:ArrayBuffer):Promise<SourceDa
     if(!/^[0-9]+$/.test(String(quantity??'').trim())||!Number.isSafeInteger(Number(quantity))||Number(quantity)>MAX_PIECES)throw new Error('库位库存必须是 0～20,000 的整数');
     if(!barcode)warnings.push(`${location} / ${sku} 缺少 Barcode，输出将留空。`);
     if(sku.length>35||barcode.length>30)warnings.push(`${location} 存在较长编码，打印时会缩小以完整显示。`);
-    rows.push({location,sku,barcode,qty:Number(quantity),hall:get('hall'),customer:get('customer'),source:`${name} / ${sheet.name}`,sourceRow:index});
+    // Availability is advisory only: unknown or zero values never change print quantities.
+    let availableQty:number|null=null,availabilityIssue:StockRow['availabilityIssue'];
+    if(!columns.available)availabilityIssue='missing-column';
+    else {
+     try{
+      const value=raw(row.getCell(columns.available)),available=String(value??'').trim();
+      if(!available)availabilityIssue='blank';
+      else if(!/^-?\d+$/.test(available)||!Number.isSafeInteger(Number(available)))availabilityIssue='invalid';
+      else availableQty=Number(available);
+     }catch{availabilityIssue='invalid';}
+    }
+    rows.push({location,sku,barcode,qty:Number(quantity),availableQty,...(availabilityIssue?{availabilityIssue}:{}),hall:get('hall'),customer:get('customer'),source:`${name} / ${sheet.name}`,sourceRow:index});
    }catch(error){throw new Error(`${name} / ${sheet.name} 第 ${index} 行：${error instanceof Error?error.message:String(error)}`);}
   }
  }
@@ -63,7 +74,7 @@ export interface PrintOptions {date:string;name:string;allowMissing:boolean}
 export async function buildWorkbook(selection:Selection,options:PrintOptions):Promise<ExcelJS.Workbook>{
  if(!selection.groups.length)throw new Error('没有可导出的库位。');
  if(selection.missing.length&&!options.allowMissing)throw new Error('所选范围缺少库位数据，请补充文件或选择生成缺失提示页。');
- const date=/^(\d{4})-(\d{2})-(\d{2})$/.exec(options.date);if(!date)throw new Error('请选择日期。');
+ const date=/^(\d{4})-(\d{2})-(\d{2})$/.exec(options.date);if(!date||!validPrintDate(options.date))throw new Error('请选择有效的打印日期。');
  const displayDate=`${date[3]}.${date[2]}.${date[1]}`;
  const workbook=new ExcelJS.Workbook();workbook.creator='Location Automation';
  for(const group of selection.groups){

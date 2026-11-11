@@ -1,7 +1,7 @@
 import {describe,it,expect} from 'vitest';
 import ExcelJS from 'exceljs';
 import {readSource,buildWorkbook} from '../src/excel';
-import {combineSources,selectLocations,canonicalLocation,type StockRow,type SourceData} from '../src/model';
+import {combineSources,selectLocations,canonicalLocation,availabilityWarning,validPrintDate,type StockRow,type SourceData} from '../src/model';
 const stock=(location:string,qty=1,sku='TEST-SKU'):StockRow=>({location,qty,sku,barcode:'001234567890',hall:'H1',customer:'TEST',source:'test.xlsx',sourceRow:2});
 const source=(name:string,rows:StockRow[]):SourceData=>({name,rows,ignored:0,warnings:[]});
 async function input(values:ExcelJS.CellValue[][],name='input.xlsx'){
@@ -59,4 +59,27 @@ describe('WMS Excel → per-location RT worksheets',()=>{
   expect(canonicalLocation(' ReI-001 ')).toBe('REI-1');for(const value of ['REI-0','REI-101','REI-1-2','XREI-1'])expect(canonicalLocation(value)).toBeNull();
   expect(()=>selectLocations([],{start:20,end:10})).toThrow('有效范围');expect(()=>selectLocations([stock('REI-1',20001)])).toThrow('上限');
  });
+});
+
+it('warns about zero and partial availability without changing the printed unit count',async()=>{
+ const book=new ExcelJS.Workbook(),sheet=book.addWorksheet('Stock');sheet.addRow(['SKU编码','Barcode','库位','库位库存','可用库存']);
+ sheet.addRow(['ZERO','B0','REI-10',3,0]);sheet.addRow(['PARTIAL','B1','REI-10',2,1]);sheet.addRow(['FULL','B2','REI-10',1,1]);sheet.addRow(['BLANK','B3','REI-10',2,null]);
+ const bytes=await book.xlsx.writeBuffer(),parsed=await readSource('stock.xlsx',new Uint8Array(bytes).buffer);
+ expect(parsed.rows[0].availableQty).toBe(0);expect(availabilityWarning(parsed.rows[0])).toContain('可用库存 0 < 库位库存 3');expect(availabilityWarning(parsed.rows[1])).toContain('可用库存 1 < 库位库存 2');expect(availabilityWarning(parsed.rows[2])).toBeNull();expect(availabilityWarning(parsed.rows[3])).toContain('为空白');expect(parsed.rows[3].availableQty).toBeNull();
+ const output=await buildWorkbook(selectLocations(parsed.rows),{date:'2026-12-25',name:'',allowMissing:false});
+ expect([5,6,7,8,9,10,11,12].map(row=>output.worksheets[0].getCell(`A${row}`).value)).toEqual(['ZERO','ZERO','ZERO','PARTIAL','PARTIAL','FULL','BLANK','BLANK']);
+ expect(output.worksheets[0].getCell('A13').value).toBeNull();expect(output.worksheets[0].getCell('D2').value).toBe('25.12.2026');expect(output.worksheets[0].pageSetup.fitToHeight).toBe(1);
+});
+it('treats absent, invalid and formula availability as advisory and never blocks stock printing',async()=>{
+ const missing=await input([['A','B','H1','REI-10',2]]);expect(availabilityWarning(missing.rows[0])).toContain('未提供可用库存列');
+ const book=new ExcelJS.Workbook(),sheet=book.addWorksheet('Stock');sheet.addRow(['SKU编码','Barcode','库位','库位库存','可用库存']);
+ for(const available of ['?',1.5,{formula:'0',result:0},-1] as ExcelJS.CellValue[])sheet.addRow(['A','B','REI-10',2,available]);
+ const bytes=await book.xlsx.writeBuffer(),parsed=await readSource('advisory.xlsx',new Uint8Array(bytes).buffer);
+ expect(parsed.rows.slice(0,3).every(row=>row.availabilityIssue==='invalid')).toBe(true);expect(availabilityWarning(parsed.rows[3])).toContain('可用库存 -1');
+ const out=await buildWorkbook(selectLocations(parsed.rows),{date:'2026-11-11',name:'',allowMissing:false});expect(out.worksheets[0].getCell('A12').value).toBe('A');expect(out.worksheets[0].getCell('A13').value).toBeNull();
+});
+it('validates calendar dates and applies one chosen date to all output tabs',async()=>{
+ expect(validPrintDate('2024-02-29')).toBe(true);for(const date of ['','2026-02-29','2026-13-01','2026-12-32'])expect(validPrintDate(date)).toBe(false);
+ const selected=selectLocations([stock('REI-1'),stock('REI-2')]);await expect(buildWorkbook(selected,{date:'2026-02-29',name:'',allowMissing:false})).rejects.toThrow('有效的打印日期');
+ const out=await buildWorkbook(selected,{date:'2026-12-25',name:'',allowMissing:false});expect(out.worksheets.every(sheet=>sheet.getCell('D2').value==='25.12.2026')).toBe(true);
 });
